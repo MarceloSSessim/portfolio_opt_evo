@@ -18,7 +18,7 @@ from utils import (
 from functools import partial
 
 # ========== PARÂMETROS ========== #
-year = 2020
+year = 2023
 folder_path = "/mnt/c/Users/msses/Desktop/ETF/weekly_log_returns"
 num_tickers = 30
 BETA = .98
@@ -64,7 +64,7 @@ log_returns = df_pivot[tickers].values
 n_semanas, n_ativos = log_returns.shape
 
 # ========== DEAP SETUP ========== #
-creator.create("FitnessMulti", base.Fitness, weights=(1.0, -1.0))  # max retorno, min CVaR
+creator.create("FitnessMulti", base.Fitness, weights=(2.0, -1.0))  # max retorno, min CVaR
 creator.create("Individual", list, fitness=creator.FitnessMulti)
 
 def generate_valid_individual(
@@ -90,7 +90,7 @@ def generate_valid_individual(
     """
     while True:
         # Sorteia quantos ativos serão selecionados (mínimo 2)
-        n_selecionados = np.random.randint(2, n_ativos + 1)
+        n_selecionados = np.random.randint(4, n_ativos + 1)
 
         # Evita combinações impossíveis
         if n_selecionados * min_peso > 1.0 or n_selecionados * max_peso < 1.0:
@@ -107,7 +107,7 @@ def generate_valid_individual(
                 n=n_selecionados,
                 max_peso=max_peso,
                 min_peso=min_peso,
-                alpha_val=2.0,
+                alpha_val=1.0,
                 batch_size=100
             )
         except ValueError:
@@ -190,8 +190,6 @@ for gen in range(1, N_GEN + 1):
 
 
     invalid_ind = [ind for ind in offspring if not ind.fitness.valid]
-    for i, ind in enumerate(invalid_ind[:5]):
-        print(f"[INVALIDO] {i}: Viável? {feasible_fn(ind)} | Distância: {distance_fn(ind):.4f}")
     fitnesses = toolbox.map(toolbox.evaluate, invalid_ind)
     for ind, fit in zip(invalid_ind, fitnesses):
         ind.fitness.values = fit
@@ -199,9 +197,7 @@ for gen in range(1, N_GEN + 1):
     # Injetar diversidade
     num_novos = int(0.60 * POP_SIZE)
     novos_inds = [toolbox.individual() for _ in range(num_novos)]
-    
-    for i, ind in enumerate(novos_inds[:5]):  # limita a 5 para não poluir
-        print(f"[NOVO IND] {i}: Viável? {feasible_fn(ind)} | Distância: {distance_fn(ind):.4f}")
+
 
     fitnesses = toolbox.map(toolbox.evaluate, novos_inds)
     for ind, fit in zip(novos_inds, fitnesses):

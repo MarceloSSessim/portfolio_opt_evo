@@ -27,36 +27,77 @@ def selecionar_tickers_representativos(
     df_filtrado: pd.DataFrame, num_tickers: int
 ) -> Tuple[pd.DataFrame, List[str]]:
     """
-    Aplica HDBSCAN para selecionar os tickers mais representativos com base nos log_returns.
+    Aplica HDBSCAN para selecionar tickers representativos:
+    um ou mais por cluster, priorizando clusters maiores e centralidade.
 
     Args:
         df_filtrado: DataFrame com tickers completos.
-        num_tickers: Número de tickers representativos a retornar.
+        num_tickers: Número total de tickers representativos a retornar.
 
     Returns:
         df_final: DataFrame apenas com os tickers selecionados.
         tickers_selecionados: Lista de tickers mais representativos.
     """
+    # Pivotar log_returns por semana
     df_pivot = df_filtrado.pivot_table(
         index='ticker',
         columns=['year', 'month', 'week_start'],
         values='log_return'
     ).fillna(0)
 
-    X = StandardScaler().fit_transform(df_pivot)
+    # Padronizar
+    scaler = StandardScaler()
+    X = scaler.fit_transform(df_pivot)
 
+    # Rodar HDBSCAN
     clusterer = hdbscan.HDBSCAN(min_cluster_size=5)
     cluster_labels = clusterer.fit_predict(X)
 
+    # DataFrame com labels
     df_clusters = pd.DataFrame({
         'ticker': df_pivot.index,
         'cluster': cluster_labels
     })
 
-    maior_cluster = df_clusters['cluster'].value_counts().idxmax()
-    tickers_maior_cluster = df_clusters[df_clusters['cluster'] == maior_cluster]['ticker'].tolist()
+    # Agrupar tickers por cluster (excluindo outliers)
+    clusters_validos = df_clusters[df_clusters['cluster'] != -1].groupby('cluster')
 
-    tickers_selecionados = tickers_maior_cluster[:num_tickers]
+    # Organizar clusters por tamanho (decrescente)
+    clusters_ordenados = sorted(
+        clusters_validos.groups.items(),
+        key=lambda item: len(item[1]),
+        reverse=True
+    )
+
+    tickers_selecionados = []
+
+    # Adicionar representantes até alcançar o total desejado
+    i = 0
+    while len(tickers_selecionados) < num_tickers:
+        for cluster_id, indices_cluster in clusters_ordenados:
+            if len(tickers_selecionados) >= num_tickers:
+                break
+            if i >= len(indices_cluster):
+                continue  # Esse cluster não tem mais representantes
+
+            tickers_cluster = df_clusters.loc[indices_cluster, 'ticker'].values
+            X_cluster = X[indices_cluster]
+
+            # Centrôide do cluster
+            centroide = X_cluster.mean(axis=0)
+
+            # Distâncias ao centróide
+            distancias = np.linalg.norm(X_cluster - centroide, axis=1)
+
+            # Ordenar os tickers do cluster por distância ao centróide
+            ordenacao = np.argsort(distancias)
+            if i < len(ordenacao):
+                ticker = tickers_cluster[ordenacao[i]]
+                if ticker not in tickers_selecionados:
+                    tickers_selecionados.append(ticker)
+        i += 1
+
+    # Filtrar DataFrame original
     df_final = df_filtrado[df_filtrado['ticker'].isin(tickers_selecionados)]
 
     return df_final, tickers_selecionados
@@ -113,10 +154,8 @@ def feasible(individuo: List[float], n_ativos: int) -> bool:
 
     soma_pesos = pesos.sum()
     num_selecionados = selecionados.sum()
-    # DEBUG
-    print(f"[FEASIBLE] Soma pesos: {soma_pesos:.4f} | Selecionados: {num_selecionados} | Viável? {abs(soma_pesos - 1) <= 0.01 and num_selecionados > 1}")
 
-    return abs(soma_pesos - 1) <= 0.01 and num_selecionados >= 2
+    return abs(soma_pesos - 1) <= 0.01 and num_selecionados >= 4
 
 
 def distance(individuo: List[float], n_ativos: int) -> float:
@@ -131,10 +170,10 @@ def distance(individuo: List[float], n_ativos: int) -> float:
     pesos = pesos / soma_pesos
 
     # Penaliza se algum ativo ultrapassar 15% (0.15), não 95%
-    excesso_concentracao = max(0, max(pesos) - 0.15)
+    excesso_concentracao = max(0, max(pesos) - 0.80)
 
     # Penaliza também se menos de 2 ativos forem usados (reforço à factibilidade)
-    penalizacao_num_ativos = max(0, 2 - selecionados.sum()) * 0.5
+    penalizacao_num_ativos = max(0, 4 - selecionados.sum()) * 0.5
 
     distancia_soma = abs(1.0 - soma_pesos)
 
