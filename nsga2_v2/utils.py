@@ -355,7 +355,7 @@ def sample_dirichlet_with_bounds_fast(
     n: int,
     max_peso: float,
     min_peso: float,
-    alpha_val: float = 1.0,
+    alpha_val: float = 2.0,
     batch_size: int = 100,
     max_tries: int = 1000
 ) -> np.ndarray:

@@ -18,6 +18,8 @@ from utils import (
     custom_crossover
 )
 from functools import partial
+from deap.tools.emo import uniform_reference_points
+
 
 # ========== PARÂMETROS ========== #
 year = 2024
@@ -179,6 +181,10 @@ fitnesses = toolbox.map(toolbox.evaluate, invalid_ind)
 for ind, fit in zip(invalid_ind, fitnesses):
     ind.fitness.values = fit
 
+# Número de objetivos = 2 (Retorno, Variância)
+ref_points = uniform_reference_points(nobj=2, p=12)  # p define granularidade
+
+
 for gen in range(1, N_GEN + 1):
     params = get_adaptive_params(
         gen=gen,
@@ -275,8 +281,7 @@ for gen in range(1, N_GEN + 1):
         for ind, fit in zip(invalid_ind, fitnesses):
             ind.fitness.values = fit
 
-    pop[:] = tools.selNSGA2(todos, POP_SIZE)
-
+    pop[:] = tools.selNSGA3(todos, POP_SIZE, ref_points)
 # ========== RESULTADOS FINAIS ========== #
 melhores_inds = tools.selBest(pop, k=5)
 
