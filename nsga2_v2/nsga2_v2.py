@@ -25,8 +25,8 @@ folder_path = "/mnt/c/Users/msses/Desktop/ETF/weekly_log_returns"
 num_tickers = 30
 BETA = .98
 CVaR_ALPHA = 0.05
-POP_SIZE = 500
-N_GEN = 50
+POP_SIZE = 1000
+N_GEN = 200
 # Parâmetros de mutação e crossover adaptativos
 INDPB_FLOAT_START = 0.8
 INDPB_FLOAT_END = 0.6
@@ -78,61 +78,14 @@ n_semanas, n_ativos = log_returns_beta.shape
 creator.create("FitnessMulti", base.Fitness, weights=(1.0, -1.0))  # max retorno, min CVaR
 creator.create("Individual", list, fitness=creator.FitnessMulti)
 
-def generate_valid_individual(
-    n_ativos: int,
-    max_peso: float = 0.95,
-    min_peso: float = 0.01
-) -> creator.Individual:
+def generate_valid_individual(n_ativos: int) -> creator.Individual:
     """
-    Gera um indivíduo válido para um problema de otimização de portfólio com DEAP,
-    combinando pesos contínuos e uma seleção binária de ativos.
-
-    Os pesos são gerados para os ativos selecionados e normalizados para somar 1,
-    respeitando os limites mínimos e máximos definidos.
-
-    Args:
-        n_ativos (int): Número total de ativos disponíveis.
-        max_peso (float): Peso máximo permitido por ativo.
-        min_peso (float): Peso mínimo permitido por ativo.
-
-    Returns:
-        creator.Individual: Indivíduo com `2 * n_ativos` genes (pesos + binários),
-                            que satisfaz as restrições de viabilidade.
+    Gera um indivíduo com apenas pesos contínuos que somam 1.
     """
     while True:
-        # Sorteia quantos ativos serão selecionados (mínimo 2)
-        n_selecionados = np.random.randint(4, n_ativos + 1)
-
-        # Evita combinações impossíveis
-        if n_selecionados * min_peso > 1.0 or n_selecionados * max_peso < 1.0:
-            continue
-
-        # Sorteia os ativos selecionados
-        selecionados = np.zeros(n_ativos, dtype=int)
-        indices = np.random.choice(n_ativos, size=n_selecionados, replace=False)
-        selecionados[indices] = 1
-
-        # Gera pesos válidos dentro dos limites
-        try:
-            pesos_selecionados = sample_dirichlet_with_bounds_fast(
-                n=n_selecionados,
-                max_peso=max_peso,
-                min_peso=min_peso,
-                alpha_val=1.0,
-                batch_size=100
-            )
-        except ValueError:
-            continue  # tenta novamente
-
-        # Monta vetor de pesos completo
-        pesos = np.zeros(n_ativos)
-        pesos[indices] = pesos_selecionados
-
-        # Constrói indivíduo
-        individuo = creator.Individual(pesos.tolist() + selecionados.tolist())
-
-        if feasible(individuo, n_ativos):
-            return individuo
+        pesos = np.random.dirichlet([1.0] * n_ativos)  # soma = 1
+        if all(p <= 0.95 for p in pesos):  # opcional: peso mínimo
+            return creator.Individual(pesos.tolist())
 
 toolbox = base.Toolbox()
 
@@ -151,7 +104,7 @@ distance_fn = partial(distance, n_ativos=n_ativos)
 mutate_fn = partial(custom_mutate, n_ativos=n_ativos)
 crossover_fn = partial(custom_crossover, n_ativos=n_ativos)
 
-toolbox.register("evaluate", DeltaPenalty(feasible_fn, (1e4, 1e4), distance_fn)(avaliar_fn))
+toolbox.register("evaluate", DeltaPenalty(feasible_fn, (-10, 1), distance_fn)(avaliar_fn))
 toolbox.register("mate", crossover_fn)
 toolbox.register("mutate", mutate_fn)
 toolbox.register("select", tools.selNSGA2)
@@ -244,21 +197,7 @@ for gen in range(1, N_GEN + 1):
                 offspring_unicos.append(f)
 
     
-    # Injetar diversidade
-    num_novos = int(0.70 * POP_SIZE)
-    novos_inds = []
-    while len(novos_inds) < num_novos:
-        ind = toolbox.individual()
-        h = individuo_para_hash(ind)
-        if h not in hashes:
-            novos_inds.append(ind)
-            hashes.add(h)
-
-
-    fitnesses = toolbox.map(toolbox.evaluate, novos_inds)
-    for ind, fit in zip(novos_inds, fitnesses):
-        ind.fitness.values = fit
-
+    #
 
     # Coletar fitness da população atual
     retornos_geracao = [ind.fitness.values[0] for ind in pop]
@@ -268,7 +207,7 @@ for gen in range(1, N_GEN + 1):
     historico_vars.append(vars_geracao)
     print(f"Geração {gen:3d} | Retorno Máx: {max(retornos_geracao):.6f} | Variância Mín: {min(vars_geracao):.6f}")
 
-    todos = pop + offspring_unicos + novos_inds
+    todos = pop + offspring_unicos #+ novos_inds
     invalid_ind = [ind for ind in todos if not ind.fitness.valid]
     if invalid_ind:
         fitnesses = toolbox.map(toolbox.evaluate, invalid_ind)
@@ -280,17 +219,17 @@ for gen in range(1, N_GEN + 1):
 # ========== RESULTADOS FINAIS ========== #
 melhores_inds = tools.selBest(pop, k=5)
 
+melhores_inds = tools.selBest(pop, k=5)
+
 print("\n==================== MELHORES INDIVÍDUOS ====================\n")
 for idx, ind in enumerate(melhores_inds, start=1):
-    pesos = np.array(ind[:n_ativos])
-    selecionados = np.array(ind[n_ativos:])
-    pesos = pesos * selecionados
+    pesos = np.array(ind)
     soma_pesos = pesos.sum()
     if soma_pesos > 0:
         pesos = pesos / soma_pesos
 
     portfolio = {
-        ticker: peso for ticker, peso, sel in zip(tickers, pesos, selecionados) if sel == 1
+        ticker: peso for ticker, peso in zip(tickers, pesos) if peso > 0.01
     }
 
     retorno, cvar = avaliar_fn(ind)
@@ -347,17 +286,16 @@ plt.show()
 
 portfolios = []
 for ind in pop:
-    pesos = np.array(ind[:n_ativos])
-    selecionados = np.array(ind[n_ativos:])
-    pesos = pesos * selecionados
+    pesos = np.array(ind)
     if pesos.sum() > 0:
         pesos = pesos / pesos.sum()
 
-    portfolio = {ticker: peso for ticker, peso, sel in zip(tickers, pesos, selecionados) if sel == 1}
+    portfolio = {ticker: peso for ticker, peso in zip(tickers, pesos)}
     portfolios.append(portfolio)
 
 df_portfolios = pd.DataFrame(portfolios).fillna(0)
 df_portfolios.to_csv("populacao_final_portfolios.csv", index=False)
+
 
 # Extrair as frentes de Pareto
 frentes = tools.sortNondominated(pop, len(pop), first_front_only=False)

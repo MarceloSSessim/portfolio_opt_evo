@@ -122,204 +122,97 @@ def selecionar_tickers_representativos(
     df_final = df_filtrado[df_filtrado['ticker'].isin(tickers_selecionados)]
     return df_final, tickers_selecionados
 
-def avaliar(
-    individuo: List[float],
-    log_returns_beta: np.ndarray,
-    n_ativos: int,
-    cvar_alpha: float  # nível de significância para o CVaR
-) -> Tuple[float, float]:
-    """
-    Avalia um indivíduo com base no retorno ponderado (beta) e CVaR dos retornos.
+def avaliar(individuo, log_returns_beta, n_ativos, cvar_alpha):
+    pesos = np.array(individuo)
 
-    Args:
-        individuo: Lista com pesos e bits binários.
-        log_returns_beta: matriz [T x N] dos retornos já ponderados por beta.
-        n_ativos: número de ativos.
-        cvar_alpha: quantil inferior para o cálculo do CVaR (ex: 0.05 para 5%).
+    # Se quiser garantir normalização extra
+    if pesos.sum() > 0:
+        pesos = pesos
 
-    Returns:
-        Tuple com (retorno ponderado, CVaR negativo).
-    """
-    pesos = np.array(individuo[:n_ativos])
-    selecionados = np.array(individuo[n_ativos:])
-    pesos = pesos * selecionados
-
-    soma_pesos = pesos.sum()
-    if soma_pesos > 0:
-        pesos = pesos / soma_pesos
-
-    # Retornos ponderados já com beta
+    # Cálculo do retorno e CVaR como antes
     portfolio_returns = log_returns_beta @ pesos
-    weighted_return = np.sum(portfolio_returns)
+    retorno = portfolio_returns.sum()
 
-    # Reverter o beta para cálculo do CVaR com os retornos reais
-    portfolio_raw_returns = log_returns_beta @ pesos
-    sorted_returns = np.sort(portfolio_raw_returns)
-    cutoff = max(1, int(np.floor(cvar_alpha * len(sorted_returns))))
-    cvar = -np.mean(sorted_returns[:cutoff])  # negativo porque estamos minimizando perda
+    sorted_returns = np.sort(portfolio_returns)
+    index_cut = max(1, int(np.floor(cvar_alpha * len(sorted_returns))))
+    cvar = -np.mean(sorted_returns[:index_cut])
 
-    return weighted_return, cvar
+    return (retorno, cvar)
 
 def feasible(individuo: List[float], n_ativos: int) -> bool:
     """
-    Verifica se o indivíduo é viável: soma dos pesos igual a 1 e pelo menos dois ativos selecionados.
-
-    Args:
-        individuo: Lista com pesos e binários.
-        n_ativos: Número total de ativos.
-
-    Returns:
-        True se o indivíduo for viável, False caso contrário.
+    Verifica se o indivíduo é viável:
+    - pesos não negativos
+    - somam aproximadamente 1
+    - pelo menos 4 ativos com peso acima de um limiar mínimo
     """
-    pesos = np.array(individuo[:n_ativos])
-    selecionados = np.array(individuo[n_ativos:])
-    pesos = pesos * selecionados
+    pesos = np.array(individuo)
 
     soma_pesos = pesos.sum()
-    num_selecionados = selecionados.sum()
+    num_ativos_usados = np.sum(pesos > 0.01)  # ativos relevantes
 
-    return abs(soma_pesos - 1) <= 0.01 and num_selecionados >= 4
+    return (
+        np.all(pesos >= 0.0) and
+        abs(soma_pesos - 1.0) <= 0.01 and
+        num_ativos_usados >= 4
+    )
 
 
 def distance(individuo: List[float], n_ativos: int) -> float:
-    pesos = np.array(individuo[:n_ativos])
-    selecionados = np.array(individuo[n_ativos:])
-    pesos = pesos * selecionados
+    """
+    Função de penalidade (distância) para indivíduos inviáveis.
+    Penaliza:
+    - soma dos pesos diferente de 1
+    - concentração excessiva em um único ativo
+    - número insuficiente de ativos com peso significativo
+    """
+    pesos = np.array(individuo)
     soma_pesos = pesos.sum()
 
     if soma_pesos == 0:
         return 1.0  # completamente inviável
 
-    pesos = pesos / soma_pesos
+    pesos = pesos
 
-    # Penaliza se algum ativo ultrapassar 15% (0.15), não 95%
-    excesso_concentracao = max(0, max(pesos) - 0.80)
-
-    # Penaliza também se menos de 2 ativos forem usados (reforço à factibilidade)
-    penalizacao_num_ativos = max(0, 4 - selecionados.sum()) * 0.5
-
+    excesso_concentracao = max(0, max(pesos) - 0.80)  # ou 0.15, se quiser mais diversificação
     distancia_soma = abs(1.0 - soma_pesos)
+    num_ativos_usados = np.sum(pesos > 0.01)
+    penalizacao_num_ativos = max(0, 4 - num_ativos_usados) * 0.5
 
     return distancia_soma + excesso_concentracao + penalizacao_num_ativos
 
 
-def custom_mutate(
-    individuo: List[float],
-    n_ativos: int,
-    indpb_float: float,
-    sigma: float,  # ignorado aqui, mantido por compatibilidade
-    indpb_bin: float
-) -> Tuple[List[float]]:
-    """
-    Mutação customizada:
-    - Mutação uniforme nos pesos contínuos (preserva pesos de ativos não selecionados)
-    - Mutação nos bits binários (garante >= 2 ativos selecionados)
-    - Normalização apenas dos pesos dos ativos selecionados
-    """
 
-    # Mutação dos bits binários
-    for i in range(n_ativos, 2 * n_ativos):
-        if np.random.rand() < indpb_bin:
-            individuo[i] = 1 - individuo[i]
-
-    # Garante pelo menos dois ativos selecionados
-    selecionados = np.array(individuo[n_ativos:])
-    if selecionados.sum() < 2:
-        indices = np.random.choice(range(n_ativos), size=2, replace=False)
-        selecionados[:] = 0
-        selecionados[indices] = 1
-        individuo[n_ativos:] = selecionados.tolist()
-
-    # Mutação uniforme nos pesos
-    pesos = np.array(individuo[:n_ativos])
-    for i in range(n_ativos):
+def custom_mutate(individuo, indpb_float, sigma = .05, **kwargs):
+    for i in range(len(individuo)):
         if np.random.rand() < indpb_float:
-            pesos[i] = np.random.uniform(0.0, 1.0)
+            individuo[i] += np.random.normal(0, sigma)
+            individuo[i] = max(0.0, individuo[i])  # sem negativos
 
-    # Normaliza apenas os ativos selecionados
-    ativos_sel = selecionados.astype(bool)
-    soma = pesos[ativos_sel].sum()
-
+    # Normalizar após mutação
+    soma = sum(individuo)
     if soma > 0:
-        pesos[ativos_sel] /= soma
-    else:
-        novos_pesos = np.random.dirichlet([2.0] * ativos_sel.sum())
-        pesos[ativos_sel] = novos_pesos
-
-    individuo[:n_ativos] = pesos.tolist()
+        for i in range(len(individuo)):
+            individuo[i]
     return individuo,
 
 
-def cruzar_pesos(w1: np.ndarray, w2: np.ndarray, bits: np.ndarray, alpha: float) -> np.ndarray:
-    """
-    Executa o crossover aritmético entre dois vetores de pesos e normaliza
-    os pesos dos ativos selecionados com base nos bits binários fornecidos.
-
-    Args:
-        w1: Vetor de pesos do primeiro pai (shape: [n_ativos]).
-        w2: Vetor de pesos do segundo pai (shape: [n_ativos]).
-        bits: Vetor binário (0 ou 1) indicando os ativos selecionados no filho (shape: [n_ativos]).
-        alpha: Parâmetro de interpolação (entre 0 e 1) usado no crossover aritmético.
-
-    Returns:
-        Vetor de pesos resultante (np.ndarray), com soma igual a 1 apenas nos ativos selecionados.
-        Os demais pesos são preservados.
-    """
-    pesos = alpha * w1 + (1 - alpha) * w2
-
-    # Garante ao menos dois ativos selecionados
-    if bits.sum() < 2:
-        idx = np.random.choice(range(len(bits)), size=2, replace=False)
-        bits[:] = 0
-        bits[idx] = 1
-
-    # Normaliza apenas os ativos selecionados
-    selecionados = bits.astype(bool)
-    soma = pesos[selecionados].sum()
-
-    if soma > 0:
-        pesos[selecionados] /= soma
-    else:
-        ativos_sel = np.where(selecionados)[0]
-        novos_pesos = np.random.dirichlet([2.0] * len(ativos_sel))
-        pesos[ativos_sel] = novos_pesos
-
-    return pesos
-
-
-def custom_crossover(ind1: List[float], ind2: List[float], n_ativos: int) -> Tuple[List[float], List[float]]:
-    """
-    Realiza crossover customizado entre dois indivíduos para problemas de otimização de portfólio.
-
-    - Crossover uniforme nos bits binários de seleção de ativos.
-    - Crossover aritmético nos pesos dos ativos (com alpha sorteado).
-    - Normalização apenas sobre os pesos dos ativos selecionados.
-    - Garante que cada filho selecione pelo menos dois ativos.
-
-    Args:
-        ind1: Primeiro indivíduo (lista com pesos e bits binários, comprimento 2 * n_ativos).
-        ind2: Segundo indivíduo (mesmo formato de ind1).
-        n_ativos: Número total de ativos (metade do tamanho do indivíduo).
-
-    Returns:
-        Uma tupla contendo dois indivíduos-filhos (List[float]), no mesmo formato dos pais.
-    """
+def custom_crossover(ind1, ind2, **kwargs):
     alpha = np.random.rand()
+    for i in range(len(ind1)):
+        ind1[i], ind2[i] = (
+            alpha * ind1[i] + (1 - alpha) * ind2[i],
+            alpha * ind2[i] + (1 - alpha) * ind1[i],
+        )
 
-    p1_w, p1_b = np.array(ind1[:n_ativos]), np.array(ind1[n_ativos:])
-    p2_w, p2_b = np.array(ind2[:n_ativos]), np.array(ind2[n_ativos:])
+    # Normalizar ambos
+    for ind in [ind1, ind2]:
+        soma = sum(ind)
+        if soma > 0:
+            for i in range(len(ind)):
+                ind[i]
 
-    mask = np.random.rand(n_ativos) < 0.5
-    f1_b = np.where(mask, p1_b, p2_b)
-    f2_b = np.where(mask, p2_b, p1_b)
-
-    f1_w = cruzar_pesos(p1_w, p2_w, f1_b.copy(), alpha)
-    f2_w = cruzar_pesos(p2_w, p1_w, f2_b.copy(), alpha)
-
-    filho1 = f1_w.tolist() + f1_b.tolist()
-    filho2 = f2_w.tolist() + f2_b.tolist()
-
-    return filho1, filho2
+    return ind1, ind2
 
 def get_adaptive_params(
     gen: int,

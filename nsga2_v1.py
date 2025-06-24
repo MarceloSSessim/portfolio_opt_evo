@@ -20,9 +20,9 @@ from utils import (
 from functools import partial
 
 # ========== PARÂMETROS ========== #
-year = 2024
+year = 2018
 folder_path = "/mnt/c/Users/msses/Desktop/ETF/weekly_log_returns"
-num_tickers = 30
+num_tickers = 50
 BETA = .98
 CVaR_ALPHA = 0.05
 POP_SIZE = 500
@@ -151,7 +151,7 @@ distance_fn = partial(distance, n_ativos=n_ativos)
 mutate_fn = partial(custom_mutate, n_ativos=n_ativos)
 crossover_fn = partial(custom_crossover, n_ativos=n_ativos)
 
-toolbox.register("evaluate", DeltaPenalty(feasible_fn, (1e4, 1e4), distance_fn)(avaliar_fn))
+toolbox.register("evaluate", DeltaPenalty(feasible_fn, (-1e4, 1e4), distance_fn)(avaliar_fn))
 toolbox.register("mate", crossover_fn)
 toolbox.register("mutate", mutate_fn)
 toolbox.register("select", tools.selNSGA2)
@@ -244,20 +244,7 @@ for gen in range(1, N_GEN + 1):
                 offspring_unicos.append(f)
 
     
-    # Injetar diversidade
-    num_novos = int(0.70 * POP_SIZE)
-    novos_inds = []
-    while len(novos_inds) < num_novos:
-        ind = toolbox.individual()
-        h = individuo_para_hash(ind)
-        if h not in hashes:
-            novos_inds.append(ind)
-            hashes.add(h)
-
-
-    fitnesses = toolbox.map(toolbox.evaluate, novos_inds)
-    for ind, fit in zip(novos_inds, fitnesses):
-        ind.fitness.values = fit
+    #
 
 
     # Coletar fitness da população atual
@@ -268,7 +255,7 @@ for gen in range(1, N_GEN + 1):
     historico_vars.append(vars_geracao)
     print(f"Geração {gen:3d} | Retorno Máx: {max(retornos_geracao):.6f} | Variância Mín: {min(vars_geracao):.6f}")
 
-    todos = pop + offspring_unicos + novos_inds
+    todos = pop + offspring_unicos #
     invalid_ind = [ind for ind in todos if not ind.fitness.valid]
     if invalid_ind:
         fitnesses = toolbox.map(toolbox.evaluate, invalid_ind)
