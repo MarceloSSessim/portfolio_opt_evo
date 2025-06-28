@@ -6,6 +6,7 @@ from typing import Tuple, List, Dict
 from typing import Optional
 from deap import creator
 from scipy.stats import dirichlet
+from sklearn.cluster import KMeans
 
 def filtrar_tickers_completos(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -22,6 +23,55 @@ def filtrar_tickers_completos(df: pd.DataFrame) -> pd.DataFrame:
     tickers_completos = contagem_por_ticker[contagem_por_ticker == n_max].index.tolist()
     df_filtrado = df[df['ticker'].isin(tickers_completos)]
     return df_filtrado
+
+def selecionar_tickers_kmeans(
+    df_filtrado: pd.DataFrame, num_tickers: int
+) -> Tuple[pd.DataFrame, List[str]]:
+    """
+    Aplica K-Means para selecionar `num_tickers` representativos.
+    Cada ticker é representado por sua série de log_retornos ao longo do tempo.
+    Seleciona o ticker mais próximo de cada centróide como representante.
+    """
+
+    # === Prepara matriz ===
+    df_pivot = df_filtrado.pivot_table(
+        index='ticker',
+        columns=['year', 'month', 'week_start'],
+        values='log_return'
+    ).fillna(0)
+
+    scaler = StandardScaler()
+    X = scaler.fit_transform(df_pivot)
+    tickers = df_pivot.index.to_numpy()
+
+    # === K-Means clustering ===
+    kmeans = KMeans(n_clusters=num_tickers, n_init=10, random_state=42)
+    labels = kmeans.fit_predict(X)
+    centroids = kmeans.cluster_centers_
+
+    # === Seleciona o ticker mais próximo de cada centróide ===
+    tickers_selecionados = []
+
+    for cluster_idx in range(num_tickers):
+        # Índices dos tickers pertencentes ao cluster
+        cluster_member_indices = np.where(labels == cluster_idx)[0]
+        if len(cluster_member_indices) == 0:
+            continue  # segurança extra (evita cluster vazio, embora raro)
+
+        membros = X[cluster_member_indices]
+        centroide = centroids[cluster_idx]
+
+        # Calcula a distância ao centróide
+        dists = np.linalg.norm(membros - centroide, axis=1)
+        idx_mais_proximo = cluster_member_indices[np.argmin(dists)]
+
+        ticker_mais_proximo = tickers[idx_mais_proximo]
+        tickers_selecionados.append(ticker_mais_proximo)
+
+    # === Filtra o DataFrame ===
+    df_final = df_filtrado[df_filtrado['ticker'].isin(tickers_selecionados)]
+
+    return df_final, tickers_selecionados
 
 def selecionar_tickers_representativos(
     df_filtrado: pd.DataFrame, num_tickers: int
