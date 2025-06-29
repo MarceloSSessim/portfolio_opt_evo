@@ -8,7 +8,6 @@ from scipy.stats import dirichlet
 from deap.tools import DeltaPenalty
 from typing import Tuple
 from utils import (
-    selecionar_tickers_representativos,
     filtrar_tickers_completos,
     avaliar,
     feasible,
@@ -21,7 +20,6 @@ from utils import (
 )
 from functools import partial
 
-# ========== PARÂMETROS ========== #
 
 def run_nsga2_once(
     df_etf: pd.DataFrame,        # dados já concatenados da janela
@@ -37,25 +35,25 @@ def run_nsga2_once(
     num_tickers = 30
     BETA = .98
     CVaR_ALPHA = 0.05
-    POP_SIZE = 700
-    N_GEN = 200
+    POP_SIZE = 600
+    N_GEN = 150
     # Parâmetros de mutação e crossover adaptativos
     INDPB_FLOAT_START = 0.8
-    INDPB_FLOAT_END = 0.6
+    INDPB_FLOAT_END = 0.4
 
     SIGMA_START = 0.3
     SIGMA_END = 0.05
 
-    INDPB_BIN_START = 0.9
-    INDPB_BIN_END = 0.6
+    INDPB_BIN_START = 0.7
+    INDPB_BIN_END = 0.05
 
     CXPB_INDPB = 0.3
 
-    CX_START = 0.4
-    CX_END = 0.2
+    CX_START = 0.8
+    CX_END = 0.7
 
-    MUT_START = 0.5
-    MUT_END = 0.8
+    MUT_START = 0.1
+    MUT_END = 0.2
     
     df_filtrado = filtrar_tickers_completos(df_etf)
     df_filtrado = df_filtrado.copy()  # ← evita qualquer "view"
@@ -176,9 +174,6 @@ def run_nsga2_once(
         if h not in hashes:
             pop.append(ind)
             hashes.add(h)
-    #LOG 
-    historico_retornos = []
-    historico_vars = []
 
     invalid_ind = [ind for ind in pop if not ind.fitness.valid]
     fitnesses = toolbox.map(toolbox.evaluate, invalid_ind)
@@ -249,7 +244,7 @@ def run_nsga2_once(
                 if len(offspring_unicos) < len(pop):
                     offspring_unicos.append(f)
 
-        num_novos = int(0.20 * POP_SIZE)
+        num_novos = int(0.2 * POP_SIZE)
         novos_inds = []
         while len(novos_inds) < num_novos:
             ind = toolbox.individual()
@@ -260,9 +255,6 @@ def run_nsga2_once(
         # Coletar fitness da população atual
         retornos_geracao = [ind.fitness.values[0] for ind in pop]
         vars_geracao = [ind.fitness.values[1] for ind in pop]
-
-        historico_retornos.append(retornos_geracao)
-        historico_vars.append(vars_geracao)
         print(f"Geração {gen:3d} | Retorno Máx: {max(retornos_geracao):.6f} | Variância Mín: {min(vars_geracao):.6f}")
 
         todos = pop + offspring_unicos + novos_inds
@@ -274,37 +266,6 @@ def run_nsga2_once(
 
         pop[:] = tools.selNSGA2(todos, POP_SIZE)
 
-    ## 4.2 histórico: df_ret / df_var
-    df_ret = pd.DataFrame(historico_retornos)
-    df_var = pd.DataFrame(historico_vars)
-
-    # Plot retornos
-    fig, ax = plt.subplots()
-    df_ret.mean(axis=1).plot(ax=ax, label="Média Retorno")
-    df_ret.min(axis=1).plot(ax=ax, label="Melhor Retorno", ls="--")
-    ax.set(title="Evolução dos Retornos", xlabel="Geração", ylabel="Retorno")
-    ax.grid(); ax.legend()
-    fig.savefig(iteration_dir / "retorno_plot.png", dpi=150)
-    plt.close(fig)
-
-    # Plot CVaR
-    fig, ax = plt.subplots()
-    df_var.mean(axis=1).plot(ax=ax, label="Média CVaR")
-    df_var.min(axis=1).plot(ax=ax, label="Melhor CVaR", ls="--")
-    ax.set(title="Evolução da CVaR", xlabel="Geração", ylabel="CVaR")
-    ax.grid(); ax.legend()
-    fig.savefig(iteration_dir / "cvar_plot.png", dpi=150)
-    plt.close(fig)
-
-    ## 4.3 Pareto final
-    vars_ = [ind.fitness.values[1] for ind in pop]
-    rets_ = [ind.fitness.values[0] for ind in pop]
-    fig, ax = plt.subplots(figsize=(7, 5))
-    ax.scatter(vars_, rets_, alpha=0.6, edgecolor="k")
-    ax.set(xlabel="CVaR", ylabel="Retorno", title="Pareto – População Final")
-    ax.grid(); fig.tight_layout()
-    fig.savefig(iteration_dir / "pareto_final.png", dpi=150)
-    plt.close(fig)
 
     # Pareto colorido (frentes)
     fronts = tools.sortNondominated(pop, len(pop), first_front_only=False)
@@ -370,13 +331,6 @@ def run_nsga2_once(
         index_label="ticker"
     )
 
-    # Salva resumo em texto
-    resumo = (
-        f"Melhor Sharpe anualizado: {best_sharpe:.4f}\n"
-        "Pesos (normalizados):\n" +
-        "\n".join(f"{tk}: {w:.4f}" for tk, w in best_port.items())
-    )
-    (iteration_dir / "summary.txt").write_text(resumo, encoding="utf-8")
 
     # retorno final
     return best_sharpe, best_port
