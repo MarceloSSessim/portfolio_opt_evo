@@ -74,7 +74,7 @@ def batch_run(folder_etf, folder_rf, output_path,
     limite = total_files - (n_files_window + 2) + 1  # critério de parada
 
     if limite <= 0:
-        print(f"❌ Não há janelas suficientes para iniciar (precisaria de pelo menos {n_files_window + 2} arquivos).")
+        print(f"Não há janelas suficientes para iniciar (precisaria de pelo menos {n_files_window + 2} arquivos).")
         return
 
     for start in range(0, limite, step_files):
@@ -84,7 +84,7 @@ def batch_run(folder_etf, folder_rf, output_path,
         window_dir.mkdir(parents=True, exist_ok=True)
 
         print(f"\n>>> Janela {date_tag}  ({n_files_window} arquivos)")
-        block_start = time.perf_counter()                        # ★ tempo (inicio bloco)
+        block_start = time.perf_counter()                        #tempo (inicio bloco)
 
         # ----- lê arquivos somente uma vez -----
         df_etf = add_time_columns(
@@ -118,7 +118,7 @@ def batch_run(folder_etf, folder_rf, output_path,
                     print(f"✅ Iteração {k:03d} concluída em {t_it:.1f}s")
 
 
-        block_elapsed = time.perf_counter() - block_start        # ★ tempo
+        block_elapsed = time.perf_counter() - block_start        # tempo
         print(f"⏱️  Janela {date_tag} finalizada em {block_elapsed/60:.1f} min")
 
 # ---------------------------------------------------------

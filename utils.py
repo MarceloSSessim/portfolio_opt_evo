@@ -416,3 +416,11 @@ def sample_dirichlet_with_bounds_fast(
         if mask.any():
             return samples[mask][0]
     raise ValueError("Não foi possível gerar vetor dentro dos limites.")
+
+def add_time_columns(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df["week_start"] = pd.to_datetime(df["week_start"])
+    df["year"]  = df["week_start"].dt.isocalendar().year
+    df["week"]  = df["week_start"].dt.isocalendar().week
+    df["month"] = df["week_start"].dt.month
+    return df
