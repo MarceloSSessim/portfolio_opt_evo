@@ -46,8 +46,22 @@ def run_single_iteration(k, df_etf, df_rf, window_dir):
 # ------------------------------------------------------------------
 # versão paralela da função principal
 # ------------------------------------------------------------------
+def proxima_faixa_iters(window_dir: Path, n_novos: int):
+    """
+    Examina window_dir/iter_* e devolve um range começando do próximo índice.
+
+    Ex.: se já existem iter_001 … iter_050 e n_novos=10  ➜  range(51, 61)
+    """
+    existentes = [
+        int(p.name.split("_")[1])
+        for p in window_dir.glob("iter_*")
+        if p.is_dir() and p.name.split("_")[1].isdigit()
+    ]
+    ultimo = max(existentes, default=0)
+    return range(ultimo + 1, ultimo + n_novos + 1)
+
 def batch_run(folder_etf, folder_rf, output_path,
-              n_files_window=12, step_files=2, n_iter=100):
+              n_files_window=36, step_files=2, n_iter=100):
 
     folder_etf  = Path(folder_etf)
     folder_rf   = Path(folder_rf)
@@ -56,7 +70,14 @@ def batch_run(folder_etf, folder_rf, output_path,
     all_etf_files = sorted(folder_etf.glob("weekly_log_returns_*.csv"))
     last_start    = len(all_etf_files) - n_files_window
 
-    for start in range(0, last_start + 1, step_files):
+    total_files = len(all_etf_files)
+    limite = total_files - (n_files_window + 2) + 1  # critério de parada
+
+    if limite <= 0:
+        print(f"❌ Não há janelas suficientes para iniciar (precisaria de pelo menos {n_files_window + 2} arquivos).")
+        return
+
+    for start in range(0, limite, step_files):
         etf_files = all_etf_files[start: start + n_files_window]
         date_tag  = etf_files[0].stem.replace("weekly_log_returns_", "")
         window_dir = output_path / date_tag
@@ -77,18 +98,25 @@ def batch_run(folder_etf, folder_rf, output_path,
 
         # ----- executa em paralelo -----
         n_cores = os.cpu_count()
-        n_processes = int(n_cores * 2)  # tenta usar 0.5 core por processo
-        with ProcessPoolExecutor(max_workers=n_cores-1) as executor:
+
+        # 1) quais índices ainda faltam?
+        novos_idxs = proxima_faixa_iters(window_dir, n_iter)
+        if not novos_idxs:
+            print("Todos os índices já existem — nada a fazer.")
+            continue
+
+        with ProcessPoolExecutor(max_workers=n_cores - 2) as executor:
             futures = [
                 executor.submit(run_single_iteration, k, df_etf, df_rf, window_dir)
-                for k in range(1, n_iter + 1)
+                for k in novos_idxs
             ]
             for fut in as_completed(futures):
-                k, t_it, err = fut.result()                      # ★ tempo
+                k, t_it, err = fut.result()
                 if err is not None:
                     print(f"⚠️  Iteração {k:03d} falhou em {t_it:.1f}s → {err}")
                 else:
                     print(f"✅ Iteração {k:03d} concluída em {t_it:.1f}s")
+
 
         block_elapsed = time.perf_counter() - block_start        # ★ tempo
         print(f"⏱️  Janela {date_tag} finalizada em {block_elapsed/60:.1f} min")
@@ -101,7 +129,7 @@ if __name__ == "__main__":
         folder_etf  = "/mnt/c/Users/msses/Desktop/ETF/weekly_log_returns",
         folder_rf   = "/mnt/c/Users/msses/Desktop/ETF/DTB1",
         output_path = "/mnt/c/Users/msses/Desktop/ETF/results_NSGA2",
-        n_files_window = 12,   # 48 semanas
+        n_files_window = 36,   # 96 semanas
         step_files     = 2,    # 8 semanas
         n_iter         = 100
     )

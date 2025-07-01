@@ -8,6 +8,20 @@ from deap import creator
 from scipy.stats import dirichlet
 from sklearn.cluster import KMeans
 
+def generate_weights_with_negatives(n, min_peso, max_peso, total=1.0, max_attempts=1000):
+    for _ in range(max_attempts):
+        # Gera pesos aleatórios uniformemente entre min_peso e max_peso
+        w = np.random.uniform(min_peso, max_peso, size=n)
+        soma = np.sum(w)
+        if soma == 0:
+            continue
+        w_norm = w / soma * total  # normaliza para que somem `total`
+
+        # Verifica se todos ainda estão dentro dos limites
+        if np.all(w_norm >= min_peso) and np.all(w_norm <= max_peso):
+            return w_norm
+    raise ValueError("Não foi possível gerar pesos viáveis após várias tentativas.")
+
 def filtrar_tickers_completos(df: pd.DataFrame) -> pd.DataFrame:
     """
     Filtra o DataFrame para manter apenas os tickers com o número máximo de observações.
@@ -172,43 +186,25 @@ def selecionar_tickers_representativos(
     df_final = df_filtrado[df_filtrado['ticker'].isin(tickers_selecionados)]
     return df_final, tickers_selecionados
 
-def avaliar(
-    individuo: List[float],
-    log_returns_beta: np.ndarray,
-    n_ativos: int,
-    cvar_alpha: float  # nível de significância para o CVaR
-) -> Tuple[float, float]:
+def avaliar(individuo, log_returns_beta, n_ativos):
     """
-    Avalia um indivíduo com base no retorno ponderado (beta) e CVaR dos retornos.
-
-    Args:
-        individuo: Lista com pesos e bits binários.
-        log_returns_beta: matriz [T x N] dos retornos já ponderados por beta.
-        n_ativos: número de ativos.
-        cvar_alpha: quantil inferior para o cálculo do CVaR (ex: 0.05 para 5%).
-
-    Returns:
-        Tuple com (retorno ponderado, CVaR negativo).
+    Objetivos: (1) Retorno acumulado (max), (2) Variância (min).
+    Aceita pesos negativos.
     """
-    pesos = np.array(individuo[:n_ativos])
-    selecionados = np.array(individuo[n_ativos:])
-    pesos = pesos * selecionados
+    pesos         = np.asarray(individuo[:n_ativos])
+    selecionados  = np.asarray(individuo[n_ativos:], dtype=bool)
+    pesos        *= selecionados            # zera ativos não escolhidos
 
-    soma_pesos = pesos.sum()
-    if soma_pesos > 0:
-        pesos = pesos / soma_pesos
+    if not np.isclose(pesos.sum(), 1.0, atol=1e-2):
+        soma = pesos.sum()
+        if soma != 0:
+            pesos /= soma
 
-    # Retornos ponderados já com beta
-    portfolio_returns = log_returns_beta @ pesos
-    weighted_return = np.sum(portfolio_returns)
+    portfolio_ret = log_returns_beta @ pesos
+    retorno       = portfolio_ret.mean()
+    variancia     = np.var(portfolio_ret, ddof=1)  # usa ddof=1 para amostra
 
-    # Reverter o beta para cálculo do CVaR com os retornos reais
-    portfolio_raw_returns = log_returns_beta @ pesos
-    sorted_returns = np.sort(portfolio_raw_returns)
-    cutoff = max(1, int(np.floor(cvar_alpha * len(sorted_returns))))
-    cvar = -np.mean(sorted_returns[:cutoff])  # negativo porque estamos minimizando perda
-
-    return weighted_return, cvar
+    return retorno, variancia               # (max, min)
 
 def feasible(individuo: List[float], n_ativos: int) -> bool:
     """
@@ -371,6 +367,7 @@ def custom_crossover(ind1: List[float], ind2: List[float], n_ativos: int) -> Tup
 
     return filho1, filho2
 
+
 def get_adaptive_params(
     gen: int,
     ngen: int,
@@ -419,4 +416,3 @@ def sample_dirichlet_with_bounds_fast(
         if mask.any():
             return samples[mask][0]
     raise ValueError("Não foi possível gerar vetor dentro dos limites.")
-

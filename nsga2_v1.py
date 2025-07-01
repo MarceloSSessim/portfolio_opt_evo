@@ -3,7 +3,10 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 import matplotlib.pyplot as plt
+import math
+from pymoo.indicators.hv import HV
 from deap import base, creator, tools
+from deap.tools.emo import assignCrowdingDist, sortNondominated
 from scipy.stats import dirichlet
 from deap.tools import DeltaPenalty
 from typing import Tuple
@@ -16,10 +19,10 @@ from utils import (
     get_adaptive_params,
     sample_dirichlet_with_bounds_fast,
     custom_crossover,
-    selecionar_tickers_kmeans
+    selecionar_tickers_kmeans,
+    generate_weights_with_negatives
 )
 from functools import partial
-
 
 def run_nsga2_once(
     df_etf: pd.DataFrame,        # dados já concatenados da janela
@@ -32,11 +35,11 @@ def run_nsga2_once(
     """
     iteration_dir.mkdir(parents=True, exist_ok=True)
 
-    num_tickers = 30
-    BETA = .98
+    num_tickers = 15
+    BETA = 1
     CVaR_ALPHA = 0.05
     POP_SIZE = 600
-    N_GEN = 150
+    N_GEN = 125
     # Parâmetros de mutação e crossover adaptativos
     INDPB_FLOAT_START = 0.8
     INDPB_FLOAT_END = 0.4
@@ -45,7 +48,7 @@ def run_nsga2_once(
     SIGMA_END = 0.05
 
     INDPB_BIN_START = 0.7
-    INDPB_BIN_END = 0.05
+    INDPB_BIN_END = 0.3
 
     CXPB_INDPB = 0.3
 
@@ -53,7 +56,7 @@ def run_nsga2_once(
     CX_END = 0.7
 
     MUT_START = 0.1
-    MUT_END = 0.2
+    MUT_END = 0.4
     
     df_filtrado = filtrar_tickers_completos(df_etf)
     df_filtrado = df_filtrado.copy()  # ← evita qualquer "view"
@@ -81,6 +84,8 @@ def run_nsga2_once(
     # ========== DEAP SETUP ========== #
     creator.create("FitnessMulti", base.Fitness, weights=(1.0, -1.0))  # max retorno, min CVaR
     creator.create("Individual", list, fitness=creator.FitnessMulti)
+    # Adiciona o atributo necessário para crowding distance
+    creator.Individual.crowding_dist = 0.0
 
     def generate_valid_individual(
         n_ativos: int,
@@ -149,7 +154,7 @@ def run_nsga2_once(
     toolbox.register("population", tools.initRepeat, list, toolbox.individual)
 
     # Funções adaptadas com partial
-    avaliar_fn = partial(avaliar, log_returns_beta=log_returns_beta, n_ativos=n_ativos, cvar_alpha = CVaR_ALPHA)
+    avaliar_fn = partial(avaliar, log_returns_beta=log_returns_beta, n_ativos=n_ativos)
     feasible_fn = partial(feasible, n_ativos=n_ativos)
     distance_fn = partial(distance, n_ativos=n_ativos)
     mutate_fn = partial(custom_mutate, n_ativos=n_ativos)
@@ -159,6 +164,27 @@ def run_nsga2_once(
     toolbox.register("mate", crossover_fn)
     toolbox.register("mutate", mutate_fn)
     toolbox.register("select", tools.selNSGA2)
+
+
+    def _to_min(ind):
+        ret, var = ind.fitness.values
+        return -ret, var                    # max→min
+
+    def calcular_hipervolume(pop, eps=1e-4):
+        # só a 1ª frente não-dominada
+        front = tools.sortNondominated(pop, len(pop),
+                                    first_front_only=True)[0]
+
+        if not front:
+            return 0.0
+
+        objs = np.array([_to_min(ind) for ind in front])
+
+        # ponto de referência = (pior             + ε)
+        ref = objs.max(axis=0) + eps
+
+        return HV(ref_point=ref)(objs)      # pymoo
+
 
     # ========== EXECUÇÃO ========== #
 
@@ -179,7 +205,8 @@ def run_nsga2_once(
     fitnesses = toolbox.map(toolbox.evaluate, invalid_ind)
     for ind, fit in zip(invalid_ind, fitnesses):
         ind.fitness.values = fit
-
+    hypervolumes_log = []
+    crowding_distances_log = []
     for gen in range(1, N_GEN + 1):
         params = get_adaptive_params(
             gen=gen,
@@ -244,7 +271,7 @@ def run_nsga2_once(
                 if len(offspring_unicos) < len(pop):
                     offspring_unicos.append(f)
 
-        num_novos = int(0.2 * POP_SIZE)
+        num_novos = int(0.20 * POP_SIZE)
         novos_inds = []
         while len(novos_inds) < num_novos:
             ind = toolbox.individual()
@@ -257,6 +284,7 @@ def run_nsga2_once(
         vars_geracao = [ind.fitness.values[1] for ind in pop]
         print(f"Geração {gen:3d} | Retorno Máx: {max(retornos_geracao):.6f} | Variância Mín: {min(vars_geracao):.6f}")
 
+
         todos = pop + offspring_unicos + novos_inds
         invalid_ind = [ind for ind in todos if not ind.fitness.valid]
         if invalid_ind:
@@ -264,7 +292,68 @@ def run_nsga2_once(
             for ind, fit in zip(invalid_ind, fitnesses):
                 ind.fitness.values = fit
 
+                # Seleciona nova população com NSGA-II
         pop[:] = tools.selNSGA2(todos, POP_SIZE)
+
+        # Ordena e separa por frentes de Pareto
+        fronts = tools.sortNondominated(pop, len(pop), first_front_only=False)
+
+        # Função auxiliar para calcular crowding distance manualmente
+        def crowding_distance(front):
+            """
+            Atribui crowding_dist para cada indivíduo da frente.
+            Retorna a lista de distâncias.
+            """
+            n = len(front)
+            if n == 0:
+                return []
+
+            distances = [0.0] * n
+            num_obj = len(front[0].fitness.values)
+
+            for m in range(num_obj):
+                # Ordena índices pelo objetivo m
+                idx_sorted = sorted(range(n), key=lambda i: front[i].fitness.values[m])
+                f_min = front[idx_sorted[0]].fitness.values[m]
+                f_max = front[idx_sorted[-1]].fitness.values[m]
+
+                distances[idx_sorted[0]] = float('inf')
+                distances[idx_sorted[-1]] = float('inf')
+
+                if f_max == f_min:
+                    continue  # evita divisão por zero
+
+                for k in range(1, n - 1):
+                    prev_val = front[idx_sorted[k - 1]].fitness.values[m]
+                    next_val = front[idx_sorted[k + 1]].fitness.values[m]
+                    distances[idx_sorted[k]] += (next_val - prev_val) / (f_max - f_min)
+
+            # Atribui ao atributo .crowding_dist de cada indivíduo
+            for ind, d in zip(front, distances):
+                ind.crowding_dist = d
+
+            return distances
+
+        # Aplica o cálculo de crowding distance em cada frente
+        for fr in fronts:
+            crowding_distance(fr)
+
+        # Calcula média das distâncias finitas
+        dists_finitas = [
+            ind.crowding_dist for ind in pop
+            if hasattr(ind, "crowding_dist") and math.isfinite(ind.crowding_dist)
+        ]
+        cd_val = float(np.mean(dists_finitas)) if dists_finitas else 0.0
+
+        # Calcula hipervolume da população atual
+        hv_val = calcular_hipervolume(pop)
+
+        # Salva os logs da geração
+        hypervolumes_log.append((gen, hv_val))
+        crowding_distances_log.append((gen, round(cd_val, 8)))
+
+
+        
 
 
     # Pareto colorido (frentes)
@@ -292,47 +381,125 @@ def run_nsga2_once(
     pd.DataFrame(portfolios).fillna(0.0).to_csv(
         iteration_dir / "populacao_final_portfolios.csv", index=False
     )
+    df_hv = pd.DataFrame(hypervolumes_log, columns=["generation", "hypervolume"])
+    df_cd = pd.DataFrame(crowding_distances_log, columns=["generation", "crowding_distance"])
 
-    ## 5. Sharpe na 1ª frente
-    rf_vec = (df_rf.set_index("week_start")["log_return"]
-            .reindex(df_pivot.index)
-            .fillna(0.0)
-            .values)
-
-    first_front = tools.sortNondominated(pop, len(pop), first_front_only=True)[0]
-    freq_year = 52
-    best_sharpe = -np.inf
-    best_ind = None
-
-    for ind in first_front:
-        w_raw = np.array(ind[:n_ativos]) * np.array(ind[n_ativos:])
+    df_hv.to_csv(iteration_dir / "log_hypervolume.csv", index=False)
+    df_cd.to_csv(iteration_dir / "log_crowding_distance.csv", index=False)
+    # ------------------------------------------------------------------
+    # 0) Utilidades de cálculo
+    # ------------------------------------------------------------------
+    def get_portfolio_returns(ind, df_ret):
+        """
+        Constrói pesos a partir do indivíduo [pesos_cont | máscara_bin]
+        e devolve o vetor de retornos semanais (shape = T,).
+        Retorna None se a soma bruta de pesos == 0 (indivíduo inviável).
+        """
+        n_assets = df_ret.shape[1]
+        w_raw = np.asarray(ind[:n_assets]) * np.asarray(ind[n_assets:])
         if w_raw.sum() == 0:
-            continue
+            return None
         w = w_raw / w_raw.sum()
-        r_port = df_pivot.values.dot(w)
-        excess = r_port - rf_vec
-        mu, sigma = excess.mean(), r_port.std()
-        sharpe = (mu * freq_year) / (sigma * np.sqrt(freq_year)) if sigma > 0 else np.nan
-        if sharpe > best_sharpe:
-            best_sharpe, best_ind = sharpe, ind
+        return df_ret @ w
 
-    # salva portfólio campeão
-    weights = (np.array(best_ind[:n_ativos]) *
-            np.array(best_ind[n_ativos:]))
-    weights = weights / weights.sum()
-    best_port = (pd.Series(weights, index=df_pivot.columns)
-                .loc[lambda s: s > 0]
-                .sort_values(ascending=False))
+    # ------- Dominância de 1ª ordem --------
+    def dominates_fsd(ret_a, ret_b):
+        """
+        True se A domina B em 1ª ordem:
+        CDF_A(x) <= CDF_B(x)  ∀ x   ↔   valores ordenados de A >= de B
+        """
+        a_sorted = np.sort(ret_a)
+        b_sorted = np.sort(ret_b)
+        return np.all(a_sorted >= b_sorted)
 
-    # Salva CSV com índice (ticker)
-    best_port.to_csv(
-        iteration_dir / "best_portfolio_by_sharpe.csv",
-        header=["weight"],
-        index_label="ticker"
+    # ------- Dominância de 2ª ordem --------
+    def dominates_ssd(ret_a, ret_b):
+        """
+        True se A domina B em 2ª ordem:
+        ∫_{-∞}^x F_A(t) dt  <=  ∫_{-∞}^x F_B(t) dt   ∀ x.
+        Implementação:
+        • Constrói grid de valores único.
+        • Calcula CDF empírica de A e B nesse grid.
+        • Soma cumulativa (discretização) ≈ integral.
+        """
+        # Grid comum
+        grid = np.sort(np.unique(np.concatenate([ret_a, ret_b])))
+        cdf_a = np.searchsorted(np.sort(ret_a), grid, side='right') / ret_a.size
+        cdf_b = np.searchsorted(np.sort(ret_b), grid, side='right') / ret_b.size
+        # Integral acumulada (Δx constante = 1 -> basta cumsum)
+        area_a = np.cumsum(cdf_a)
+        area_b = np.cumsum(cdf_b)
+        return np.all(area_a <= area_b)
+
+    # ------------------------------------------------------------------
+    # 1) Calcula retornos de todos indivíduos da 1ª frente
+    # ------------------------------------------------------------------
+    first_front = tools.sortNondominated(pop, len(pop), first_front_only=True)[0]
+
+    ret_matrix = df_pivot.values                # T x N
+    port_returns = {}                           # id(ind) -> vetor retornos
+    valid_inds   = []
+    for ind in first_front:
+        r = get_portfolio_returns(ind, ret_matrix)
+        if r is not None:
+            port_returns[id(ind)] = r
+            valid_inds.append(ind)
+
+    # ------------------------------------------------------------------
+    # 2) FILTRO FSD (remove dominados em 1ª ordem)
+    # ------------------------------------------------------------------
+    survivors_fsd = []
+    for ind_a in valid_inds:
+        if not any(
+            dominates_fsd(port_returns[id(ind_b)], port_returns[id(ind_a)])
+            for ind_b in valid_inds if ind_b is not ind_a
+        ):
+            survivors_fsd.append(ind_a)
+
+    # ------------------------------------------------------------------
+    # 3) FILTRO SSD (se >1 sobreviveram)
+    # ------------------------------------------------------------------
+    if len(survivors_fsd) == 1:
+        final_candidates = survivors_fsd
+    else:
+        final_candidates = []
+        for ind_a in survivors_fsd:
+            if not any(
+                dominates_ssd(port_returns[id(ind_b)], port_returns[id(ind_a)])
+                for ind_b in survivors_fsd if ind_b is not ind_a
+            ):
+                final_candidates.append(ind_a)
+
+    # ------------------------------------------------------------------
+    # 4) Desempate (maior retorno médio)
+    # ------------------------------------------------------------------
+    best_ind = max(
+        final_candidates,
+        key=lambda ind: port_returns[id(ind)].mean()
     )
+
+    # ------------------------------------------------------------------
+    # 5) Salva portfólio vencedor
+    # ------------------------------------------------------------------
+    n_assets = df_pivot.shape[1]
+    w_final = np.array(best_ind[:n_assets]) * np.array(best_ind[n_assets:])
+    w_final /= w_final.sum()
+
+    best_port = (
+        pd.Series(w_final, index=df_pivot.columns)
+        .sort_values(ascending=False)
+    )
+
+    best_port.to_csv(
+        iteration_dir / "best_portfolio_by_SSD.csv",
+        header=["weight"], index_label="ticker"
+    )
+
+    print("Portfólio escolhido por dominância estocástica (FSD → SSD) salvo em:",
+        iteration_dir / "best_portfolio_by_SSD.csv")
 
 
     # retorno final
-    return best_sharpe, best_port
+    return best_port
 
 
